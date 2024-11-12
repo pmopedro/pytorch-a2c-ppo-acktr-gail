@@ -18,9 +18,11 @@ from a2c_ppo_acktr.envs import make_vec_envs
 from a2c_ppo_acktr.model import Policy
 from a2c_ppo_acktr.storage import RolloutStorage
 from evaluation import evaluate
+from torch.utils.tensorboard import SummaryWriter
 
 
 def main():
+
     args = get_args()
 
     torch.manual_seed(args.seed)
@@ -35,6 +37,9 @@ def main():
     utils.cleanup_log_dir(log_dir)
     utils.cleanup_log_dir(eval_log_dir)
 
+    # Initialize TensorBoard SummaryWriter
+    writer = SummaryWriter(log_dir=log_dir+args.run_name)
+
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
 
@@ -48,6 +53,7 @@ def main():
     actor_critic.to(device)
 
     if args.algo == 'a2c':
+        print("Using A2C with calculation")
         agent = algo.A2C_ACKTR(
             actor_critic,
             args.value_loss_coef,
@@ -79,7 +85,7 @@ def main():
         file_name = os.path.join(
             args.gail_experts_dir, "trajs_{}.pt".format(
                 args.env_name.split('-')[0].lower()))
-        
+
         expert_dataset = gail.ExpertDataset(
             file_name, num_trajectories=4, subsample_frequency=20)
         drop_last = len(expert_dataset) > args.gail_batch_size
@@ -113,7 +119,7 @@ def main():
         for step in range(args.num_steps):
             # Sample actions
             with torch.no_grad():
-                value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
+                value, action, action_log_prob, recurrent_hidden_states, kl_divergence = actor_critic.act(
                     rollouts.obs[step], rollouts.recurrent_hidden_states[step],
                     rollouts.masks[step])
 
@@ -186,6 +192,21 @@ def main():
                         np.median(episode_rewards), np.min(episode_rewards),
                         np.max(episode_rewards), dist_entropy, value_loss,
                         action_loss))
+            writer.add_scalar('Loss/Value Loss', value_loss, total_num_steps)
+            writer.add_scalar('Loss/Action Loss', action_loss, total_num_steps)
+            writer.add_scalar('Loss/Entropy', dist_entropy, total_num_steps)
+            writer.add_scalar('Reward/Mean Episode Reward',
+                              np.mean(episode_rewards), total_num_steps)
+            writer.add_scalar('Reward/Median Episode Reward',
+                              np.median(episode_rewards), total_num_steps)
+            writer.add_scalar('Reward/Min Episode Reward',
+                              np.min(episode_rewards), total_num_steps)
+            writer.add_scalar('Reward/Max Episode Reward',
+                              np.max(episode_rewards), total_num_steps)
+            # Compute the mean kl
+            mean_kl_divergence = kl_divergence.mean()
+            writer.add_scalar(
+                'KL_Divergence', mean_kl_divergence, total_num_steps)
 
         if (args.eval_interval is not None and len(episode_rewards) > 1
                 and j % args.eval_interval == 0):

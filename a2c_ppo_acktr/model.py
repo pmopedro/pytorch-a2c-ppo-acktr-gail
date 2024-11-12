@@ -18,12 +18,16 @@ class Policy(nn.Module):
         if base_kwargs is None:
             base_kwargs = {}
         if base is None:
-            if len(obs_shape) == 3:
-                base = CNNBase
-            elif len(obs_shape) == 1:
-                base = MLPBase
-            else:
-                raise NotImplementedError
+            base = CNNBase
+            print("Let's use an CNN")
+            # if len(obs_shape) >= 3:
+            #     base = CNNBase
+            # elif len(obs_shape) == 1:
+            #     base = MLPBase
+            # else:
+            #     raise NotImplementedError
+
+        print(obs_shape)
 
         self.base = base(obs_shape[0], **base_kwargs)
 
@@ -52,7 +56,8 @@ class Policy(nn.Module):
         raise NotImplementedError
 
     def act(self, inputs, rnn_hxs, masks, deterministic=False):
-        value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+        value, actor_features, rnn_hxs, kl_divergence = self.base(
+            inputs, rnn_hxs, masks)
         dist = self.dist(actor_features)
 
         if deterministic:
@@ -63,14 +68,15 @@ class Policy(nn.Module):
         action_log_probs = dist.log_probs(action)
         dist_entropy = dist.entropy().mean()
 
-        return value, action, action_log_probs, rnn_hxs
+        return value, action, action_log_probs, rnn_hxs, kl_divergence
 
     def get_value(self, inputs, rnn_hxs, masks):
-        value, _, _ = self.base(inputs, rnn_hxs, masks)
+        value, _, _, _ = self.base(inputs, rnn_hxs, masks)
         return value
 
     def evaluate_actions(self, inputs, rnn_hxs, masks, action):
-        value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+        value, actor_features, rnn_hxs, kl_divergence = self.base(
+            inputs, rnn_hxs, masks)
         dist = self.dist(actor_features)
 
         action_log_probs = dist.log_probs(action)
@@ -126,11 +132,11 @@ class NNBase(nn.Module):
 
             # Let's figure out which steps in the sequence have a zero for any agent
             # We will always assume t=0 has a zero in it as that makes the logic cleaner
-            has_zeros = ((masks[1:] == 0.0) \
-                            .any(dim=-1)
-                            .nonzero()
-                            .squeeze()
-                            .cpu())
+            has_zeros = ((masks[1:] == 0.0)
+                         .any(dim=-1)
+                         .nonzero()
+                         .squeeze()
+                         .cpu())
 
             # +1 to correct the masks[1:]
             if has_zeros.dim() == 0:
@@ -167,32 +173,64 @@ class NNBase(nn.Module):
 
 
 class CNNBase(NNBase):
-    def __init__(self, num_inputs, recurrent=False, hidden_size=512):
+    def __init__(self, num_inputs=3, recurrent=False, hidden_size=64):
         super(CNNBase, self).__init__(recurrent, hidden_size, hidden_size)
 
-        init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
-                               constant_(x, 0), nn.init.calculate_gain('relu'))
+        # Initialize convolutional layers
+        def init_(m):
+            return init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0),
+                        nn.init.calculate_gain('relu'))
 
-        self.main = nn.Sequential(
-            init_(nn.Conv2d(num_inputs, 32, 8, stride=4)), nn.ReLU(),
-            init_(nn.Conv2d(32, 64, 4, stride=2)), nn.ReLU(),
-            init_(nn.Conv2d(64, 32, 3, stride=1)), nn.ReLU(), Flatten(),
-            init_(nn.Linear(32 * 7 * 7, hidden_size)), nn.ReLU())
+        self.convs = nn.Sequential(
+            init_(nn.Conv2d(num_inputs, 16, kernel_size=2, stride=1)), nn.Tanh(),
+            init_(nn.Conv2d(16, 32, kernel_size=2, stride=1)), nn.Tanh(),
+            init_(nn.Conv2d(32, 64, kernel_size=2, stride=1)), nn.Tanh()
+        )
+        self.flatten = Flatten()
 
-        init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
-                               constant_(x, 0))
+        # Compute the size after flattening (for input size 13x13)
+        num_flattened_features = 64 * 10 * 10  # Adjust according to your input size
 
-        self.critic_linear = init_(nn.Linear(hidden_size, 1))
+        # Stochastic encoder: mean and log variance layers
+        self.fc_mean = nn.Sequential(
+            init_(nn.Linear(num_flattened_features, hidden_size)),
+            nn.Tanh()
+        )
+        self.fc_logvar = nn.Linear(num_flattened_features, hidden_size)
+
+        # Critic network: one linear layer of hidden size 64
+        self.critic = nn.Sequential(
+            init_(nn.Linear(hidden_size, 64)),
+            nn.Tanh(),
+            init_(nn.Linear(64, 1))
+        )
 
         self.train()
 
     def forward(self, inputs, rnn_hxs, masks):
-        x = self.main(inputs / 255.0)
+        x = self.convs(inputs / 255.0)
+        x = self.flatten(x)
+
+        # Compute mean and log variance
+        mean = self.fc_mean(x)
+        logvar = self.fc_logvar(x)
+
+        # Compute KL divergence between p(Z|S) ~ N(mean, var) and q(Z) ~ N(0, I)
+        kl_divergence = -0.5 * \
+            torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=1)
+
+        # Sample z using reparameterization trick
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mean + eps * std
 
         if self.is_recurrent:
-            x, rnn_hxs = self._forward_gru(x, rnn_hxs, masks)
+            z, rnn_hxs = self._forward_gru(z, rnn_hxs, masks)
 
-        return self.critic_linear(x), x, rnn_hxs
+        # Value function from the critic network
+        value = self.critic(z)
+
+        return value, z, rnn_hxs, kl_divergence
 
 
 class MLPBase(NNBase):
@@ -202,8 +240,8 @@ class MLPBase(NNBase):
         if recurrent:
             num_inputs = hidden_size
 
-        init_ = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.
-                               constant_(x, 0), np.sqrt(2))
+        def init_(m): return init(m, nn.init.orthogonal_, lambda x: nn.init.
+                                  constant_(x, 0), np.sqrt(2))
 
         self.actor = nn.Sequential(
             init_(nn.Linear(num_inputs, hidden_size)), nn.Tanh(),
