@@ -82,7 +82,7 @@ class Policy(nn.Module):
         action_log_probs = dist.log_probs(action)
         dist_entropy = dist.entropy().mean()
 
-        return value, action_log_probs, dist_entropy, rnn_hxs
+        return value, action_log_probs, dist_entropy, rnn_hxs, kl_divergence
 
 
 class NNBase(nn.Module):
@@ -215,7 +215,7 @@ class CNNBase(NNBase):
         mean = self.fc_mean(x)
         logvar = self.fc_logvar(x)
 
-        # Compute KL divergence between p(Z|S) ~ N(mean, var) and q(Z) ~ N(0, I)
+        # Compute KL divergence
         kl_divergence = -0.5 * \
             torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=1)
 

@@ -1,10 +1,14 @@
 import argparse
 
 import torch
+import yaml
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='RL')
+
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to the YAML configuration file')
     parser.add_argument(
         '--algo', default='a2c', help='algorithm to use: a2c | ppo | acktr')
     parser.add_argument(
@@ -24,7 +28,16 @@ def get_args():
     parser.add_argument(
         '--gail-epoch', type=int, default=5, help='gail epochs (default: 5)')
     parser.add_argument(
-        '--lr', type=float, default=7e-4, help='learning rate (default: 7e-4)')
+        '--lr', type=float, default=2e-4, help='learning rate (default: 7e-4)')
+    parser.add_argument(
+        '--kl_loss_coef_init', type=float, default=0.0001, help='kl coeficient (default: 1e-4)')
+    parser.add_argument('--kl_loss_coef_alpha', type=float, default=1.0001,
+                        help='Multiplicative factor for KL divergence coefficient annealing (α)')
+    parser.add_argument(
+        '--pretrain_steps',
+        type=float,
+        default=10e5,
+        help='RMSprop optimizer epsilon (default: 1e-5)')
     parser.add_argument(
         '--eps',
         type=float,
@@ -115,7 +128,7 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=10e6,
+        default=2*10e5,
         help='number of environment steps to train (default: 10e6)')
     parser.add_argument(
         '--env-name',
@@ -152,6 +165,12 @@ def get_args():
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
+
+    if args.config:
+        with open(args.config, 'r') as f:
+            config_args = yaml.safe_load(f)
+            for key, value in config_args.items():
+                setattr(args, key, value)
 
     assert args.algo in ['a2c', 'ppo', 'acktr']
     if args.recurrent_policy:
