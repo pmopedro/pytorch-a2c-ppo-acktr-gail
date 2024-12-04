@@ -37,7 +37,12 @@ except ImportError:
 # from gymnasium.envs.registration import register
 
 
-def make_env(env_id, rank, log_dir, allow_early_resets):
+import os
+import pickle
+import matplotlib.pyplot as plt
+
+
+def make_env(env_id, rank, log_dir, allow_early_resets, seed):
     def _thunk():
         if env_id.startswith("dm"):
             _, domain, task = env_id.split('.')
@@ -45,7 +50,7 @@ def make_env(env_id, rank, log_dir, allow_early_resets):
             env = ClipAction(env)
         else:
             env = SimpleEnv(size=13, replace_agent_episode=True,
-                            replace_goal_episode=False)
+                            replace_goal_episode=False, seed=seed)
             env = ImageObservationWrapper(env)
             env = TransposeImage(env)
 
@@ -59,6 +64,19 @@ def make_env(env_id, rank, log_dir, allow_early_resets):
             env = TimeLimitMask(env)
 
         if log_dir is not None:
+            # Create directory for envs if it doesn't exist
+            envs_dir = os.path.join(log_dir, 'envs')
+            os.makedirs(envs_dir, exist_ok=True)
+
+            # Save the environment instance as a pickle
+            env_pickle_path = os.path.join(envs_dir, f"env_rank_{rank}.pkl")
+            with open(env_pickle_path, 'wb') as f:
+                pickle.dump(env, f)
+
+            # Save the environment visualization as a PNG
+            env_png_path = os.path.join(envs_dir, f"env_rank_{rank}.png")
+            save_env_as_png(env, env_png_path)
+
             env = Monitor(env,
                           os.path.join(log_dir, str(rank)),
                           allow_early_resets=allow_early_resets)
@@ -70,24 +88,25 @@ def make_env(env_id, rank, log_dir, allow_early_resets):
                     env = FireResetEnv(env)
                 env = WarpFrame(env, width=84, height=84)
                 env = ClipRewardEnv(env)
-        # elif len(env.observation_space.shape) == 3:
         else:
             print(
                 f"Custom env created with observation_space: {env.observation_space}")
 
-            # raise NotImplementedError(
-            #     "CNN models work only for atari,\n"
-            #     "please use a custom wrapper for a custom pixel input env.\n"
-            #     "See wrap_deepmind for an example.")
-
-        # If the input has shape (W,H,3), wrap for PyTorch convolutions
-        # obs_shape = env.observation_space.shape
-        # if len(obs_shape) == 3 and obs_shape[2] in [1, 3]:
-        #     env = TransposeImage(env, op=[2, 0, 1])
-
         return env
 
     return _thunk
+
+
+def save_env_as_png(env, file_path):
+    """
+    Save a rendered visualization of the environment as a PNG file.
+    """
+    grid = env.gen_obs()["image"]  # Get the grid visualization
+    plt.figure(figsize=(5, 5))
+    plt.imshow(grid)  # Render the grid as an image
+    plt.axis("off")
+    plt.savefig(file_path, bbox_inches="tight", pad_inches=0)
+    plt.close()
 
 
 def make_vec_envs(env_name,
@@ -99,7 +118,7 @@ def make_vec_envs(env_name,
                   allow_early_resets,
                   num_frame_stack=None):
     envs = [
-        make_env(env_name, i, log_dir, allow_early_resets)
+        make_env(env_name, i, log_dir, allow_early_resets, seed=i)
         for i in range(num_processes)
     ]
 

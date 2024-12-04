@@ -36,7 +36,7 @@ def get_args():
     parser.add_argument(
         '--pretrain_steps',
         type=float,
-        default=10e5,
+        default=6*10e5,
         help='RMSprop optimizer epsilon (default: 1e-5)')
     parser.add_argument(
         '--eps',
@@ -128,7 +128,7 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=3*10e5,
+        default=8*10e5,
         help='number of environment steps to train (default: 10e6)')
     parser.add_argument(
         '--env-name',

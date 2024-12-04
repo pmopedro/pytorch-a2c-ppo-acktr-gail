@@ -29,6 +29,7 @@ class SimpleEnv(MiniGridEnv):
         max_steps: int | None = None,
         replace_agent_episode=True,
         replace_goal_episode=True,
+        seed=None,
         **kwargs,
     ):
         self.fixed_layout = fixed_layout
@@ -38,6 +39,9 @@ class SimpleEnv(MiniGridEnv):
         self.replace_agent_each_episode = replace_agent_episode
         self.replace_goal_each_episode = replace_goal_episode
         self.goal_pos = None
+        self.seed = seed  # Save the seed
+        # Create a random state using the seed
+        self.random_state = random.Random(seed)
 
         mission_space = MissionSpace(mission_func=self._gen_mission)
 
@@ -76,25 +80,31 @@ class SimpleEnv(MiniGridEnv):
     def _gen_mission():
         return "Reach the goal"
 
-    def _place_agent_randomly(self):
-        # Gather all valid empty positions in the grid
-        empty_positions = [
-            (x, y)
-            for x in range(1, self.grid.width - 1)
-            for y in range(1, self.grid.height - 1)
-            if self.grid.get(x, y) is None  # Check that the cell is empty
-        ]
+    def _gen_grid(self, width, height):
+        # Initialize all interior cells as walls if the maze hasn't been generated yet
+        if not self.generated_maze:
+            self.grid = Grid(width, height)
 
-        if not empty_positions:
-            raise ValueError(
-                "No valid empty positions available to place the agent!")
+            # Generate the surrounding walls
+            self.grid.wall_rect(0, 0, width, height)
 
-        # Select a random empty position for the agent
-        start_pos = random.choice(empty_positions)
-        self.agent_pos = start_pos
-        self.agent_dir = self.agent_start_dir
+            for x in range(1, width - 1):
+                for y in range(1, height - 1):
+                    self.grid.set(x, y, Wall())
 
-    def _place_agent_and_goal(self, width, height):
+            # Generate the maze using Kruskal's algorithm
+            self._generate_maze_kruskal(width, height)
+            self.generated_maze = True
+        else:
+            # Clear previous agent and goal positions if they exist
+            if self.agent_pos != (-1, -1):
+                # Remove the agent from the grid
+                self.grid.set(*self.agent_pos, None)
+
+            # Remove the goal from the grid
+            self.grid.set(*self.goal_pos, None)
+
+        # Place the agent in a random valid position or use a predefined start position
         if self.replace_agent_each_episode or self.agent_pos is None:
             if self.agent_start_pos is None:
                 self._place_agent_randomly()
@@ -104,12 +114,84 @@ class SimpleEnv(MiniGridEnv):
                 assert self.grid.get(
                     *self.agent_pos) is None, "Agent start position is not empty!"
 
-        self.put_obj(Goal(), 1, 11)
-        self.put_obj(Goal(), 1, 10)
-        self.goal_pos = (1, 11)
+        # Randomly place a goal square in a reachable position
+        if self.replace_goal_each_episode or self.goal_pos is None:
+            while True:
+                goal_pos = (
+                    self.random_state.randint(1, width - 1),
+                    self.random_state.randint(1, height - 1),
+                )
+                if self.grid.get(*goal_pos) is None and self._is_reachable(self.agent_pos, goal_pos):
+                    self.put_obj(Goal(), goal_pos[0], goal_pos[1])
+                    self.goal_pos = goal_pos  # Save the goal position
+                    break
+
+        # Restore the surrounding walls
+        self.grid.wall_rect(0, 0, width, height)
+        self.mission = "grand mission"
+
+    def _place_agent_randomly(self):
+        empty_positions = [
+            (x, y)
+            for x in range(1, self.grid.width - 1)
+            for y in range(1, self.grid.height - 1)
+            if self.grid.get(x, y) is None
+        ]
+
+        if not empty_positions:
+            raise ValueError(
+                "No valid empty positions available to place the agent!")
+
+        start_pos = self.random_state.choice(empty_positions)
+        self.agent_pos = start_pos
+        self.agent_dir = self.agent_start_dir
+
+    def _generate_maze_kruskal(self, width, height):
+        edges = []
+        for x in range(1, width - 1, 2):
+            for y in range(1, height - 1, 2):
+                if x < width - 2:
+                    edges.append(((x, y), (x + 2, y)))
+                if y < height - 2:
+                    edges.append(((x, y), (x, y + 2)))
+
+        self.random_state.shuffle(edges)
+
+        parent = {}
+        rank = {}
+
+        def find(cell):
+            if parent[cell] != cell:
+                parent[cell] = find(parent[cell])
+            return parent[cell]
+
+        def union(cell1, cell2):
+            root1 = find(cell1)
+            root2 = find(cell2)
+            if root1 != root2:
+                if rank[root1] > rank[root2]:
+                    parent[root2] = root1
+                else:
+                    parent[root1] = root2
+                    if rank[root1] == rank[root2]:
+                        rank[root2] += 1
+
+        for x in range(1, width, 2):
+            for y in range(1, height, 2):
+                cell = (x, y)
+                parent[cell] = cell
+                rank[cell] = 0
+
+        for (cell1, cell2) in edges:
+            if find(cell1) != find(cell2):
+                wall_x = (cell1[0] + cell2[0]) // 2
+                wall_y = (cell1[1] + cell2[1]) // 2
+                self.grid.set(wall_x, wall_y, None)
+                self.grid.set(cell1[0], cell1[1], None)
+                self.grid.set(cell2[0], cell2[1], None)
+                union(cell1, cell2)
 
     def _is_reachable(self, start, goal):
-        # Perform a BFS to check if the goal is reachable from the start
         from collections import deque
         queue = deque([start])
         visited = set()
@@ -125,6 +207,7 @@ class SimpleEnv(MiniGridEnv):
                     if self.grid.get(nx, ny) is None and (nx, ny) not in visited:
                         queue.append((nx, ny))
                         visited.add((nx, ny))
+        return False
 
     def plot_grid(self):
         img = self.gen_obs()
@@ -176,35 +259,35 @@ class SimpleEnv(MiniGridEnv):
 
         return obs
 
-    def _gen_grid(self, width, height):
-        # Create an empty grid
-        self.grid = Grid(width, height)
+    # def _gen_grid(self, width, height):
+    #     # Create an empty grid
+    #     self.grid = Grid(width, height)
 
-        # Generate the surrounding walls
-        self.grid.wall_rect(0, 0, width, height)
+    #     # Generate the surrounding walls
+    #     self.grid.wall_rect(0, 0, width, height)
 
-        # Place internal walls according to the maze pattern in the image
-        walls = [
-            (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1,
-                                                     6), (1, 7), (1, 8), (1, 9), (1, 10), (1, 11),
-            (11, 1), (11, 2), (11, 3), (11, 4), (11, 5), (11,
-                                                          6), (11, 7), (11, 8), (11, 9), (11, 10), (11, 11),
-            (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3), (8, 3),
-            (4, 6), (5, 6), (6, 6), (7, 6), (8, 6), (9, 6), (10, 6),
-            (4, 7), (4, 8), (4, 9),
-            (5, 9), (6, 9), (7, 9), (8, 9),
+    #     # Place internal walls according to the maze pattern in the image
+    #     walls = [
+    #         (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1,
+    #                                                  6), (1, 7), (1, 8), (1, 9), (1, 10), (1, 11),
+    #         (11, 1), (11, 2), (11, 3), (11, 4), (11, 5), (11,
+    #                                                       6), (11, 7), (11, 8), (11, 9), (11, 10), (11, 11),
+    #         (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3), (8, 3),
+    #         (4, 6), (5, 6), (6, 6), (7, 6), (8, 6), (9, 6), (10, 6),
+    #         (4, 7), (4, 8), (4, 9),
+    #         (5, 9), (6, 9), (7, 9), (8, 9),
 
-        ]
+    #     ]
 
-        for wx, wy in walls:
-            self.grid.set(wx, wy, Wall())
+    #     for wx, wy in walls:
+    #         self.grid.set(wx, wy, Wall())
 
-        # self.agent_dir = 0  # Facing right
+    #     # self.agent_dir = 0  # Facing right
 
-        self._place_agent_and_goal(width, height)
+    #     self._place_agent_and_goal(width, height)
 
-        # Define the mission
-        self.mission = "Reach the goal"
+    #     # Define the mission
+    #     self.mission = "Reach the goal"
 
     def _reward(self) -> float:
         """
