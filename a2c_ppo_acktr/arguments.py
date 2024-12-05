@@ -28,7 +28,7 @@ def get_args():
     parser.add_argument(
         '--gail-epoch', type=int, default=5, help='gail epochs (default: 5)')
     parser.add_argument(
-        '--lr', type=float, default=2e-4, help='learning rate (default: 7e-4)')
+        '--lr', type=float, default=5e-4, help='learning rate (default: 7e-4)')
     parser.add_argument(
         '--kl_loss_coef_init', type=float, default=0.0001, help='kl coeficient (default: 1e-4)')
     parser.add_argument('--kl_loss_coef_alpha', type=float, default=1.0002,
@@ -36,7 +36,7 @@ def get_args():
     parser.add_argument(
         '--pretrain_steps',
         type=float,
-        default=6*10e5,
+        default=3*10e5,
         help='RMSprop optimizer epsilon (default: 1e-5)')
     parser.add_argument(
         '--eps',
@@ -128,7 +128,7 @@ def get_args():
     parser.add_argument(
         '--num-env-steps',
         type=int,
-        default=8*10e5,
+        default=4*10e5,
         help='number of environment steps to train (default: 10e6)')
     parser.add_argument(
         '--env-name',

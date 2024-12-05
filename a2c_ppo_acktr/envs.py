@@ -101,7 +101,7 @@ def save_env_as_png(env, file_path):
     """
     Save a rendered visualization of the environment as a PNG file.
     """
-    grid = env.gen_obs()["image"]  # Get the grid visualization
+    grid = env.get_frame()  # Get the grid visualization
     plt.figure(figsize=(5, 5))
     plt.imshow(grid)  # Render the grid as an image
     plt.axis("off")
@@ -117,9 +117,9 @@ def make_vec_envs(env_name,
                   device,
                   allow_early_resets,
                   num_frame_stack=None):
-    envs = [
+    envs = 2*[
         make_env(env_name, i, log_dir, allow_early_resets, seed=i)
-        for i in range(num_processes)
+        for i in range(num_processes//2)
     ]
 
     if len(envs) > 1:
@@ -144,7 +144,43 @@ def make_vec_envs(env_name,
     return envs
 
 
+def make_vec_envs_test(env_name,
+                       seed,
+                       num_processes,
+                       gamma,
+                       log_dir,
+                       device,
+                       allow_early_resets,
+                       num_frame_stack=None):
+    envs = 2*[
+        make_env(env_name, i, log_dir+"/test_set/", allow_early_resets, seed=i)
+        for i in range(num_processes//2, 2*num_processes//2)
+    ]
+
+    if len(envs) > 1:
+        envs = SubprocVecEnv(envs)
+    else:
+        envs = DummyVecEnv(envs)
+
+    # if len(envs.observation_space.shape) == 1:
+    #     if gamma is None:
+    #         envs = VecNormalize(envs, norm_reward=False)
+    #     else:
+    #         envs = VecNormalize(envs, gamma=gamma)
+
+    envs = VecPyTorch(envs, device)
+
+    if num_frame_stack is not None:
+        envs = VecPyTorchFrameStack(envs, num_frame_stack, device)
+    else:
+        pass
+        # envs = VecPyTorchFrameStack(envs, 4, device)
+
+    return envs
+
 # Checks whether done was caused my timit limits or not
+
+
 class TimeLimitMask(gym.Wrapper):
     def step(self, action):
         obs, rew, done, info, _ = self.env.step(action)
